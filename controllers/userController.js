@@ -12,6 +12,7 @@ const {
 } = require("../services/smsService");
 const { JWT_SECRET } = require("../middleware/auth");
 const { getDialCodeByCountry } = require('./countryController');
+const smsController = require('./smsController');
 
 // Initialize the Google OAuth client
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -23,23 +24,23 @@ const registerUser = async (req, res) => {
         // verify if email already exist
         const existUser = await User.findOne({ email });
         if (existUser) {
-            return res.status(400).json({ error: "El correo electrónico ya está en uso" });
+            return res.status(400).json({ error: "Email is in use" });
         }
 
         //verify passwords is match
         if (password !== confirmPassword) {
-            return res.status(400).json({ error: "Las contraseñas no coinciden" });
+            return res.status(400).json({ error: "Passwords do not match" });
         }
 
         // Validate PIN format before hashing
         if (!pin || pin.length !== 6 || !/^\d{6}$/.test(pin)) {
-            return res.status(400).json({ error: "El PIN debe tener exactamente 6 dígitos" });
+            return res.status(400).json({ error: "The PIN must be exactly 6 digits" });
         }
 
         const birthDateObj = new Date(birthDate);
         const age = new Date().getFullYear() - birthDateObj.getFullYear();
         if (age < 18) {
-            return res.status(400).json({ error: "Debes tener al menos 18 años para registrarte" });
+            return res.status(400).json({ error: "You must be at least 18 years old to register" });
         }
 
         // hashed password before save
@@ -58,7 +59,7 @@ const registerUser = async (req, res) => {
             lastName,
             email,
             phone,
-            countryDialCode, // Save the country dial code
+            countryDialCode,
             password: hashedPassword,
             pin: hashedPin,
             birthDate,
@@ -80,67 +81,145 @@ const registerUser = async (req, res) => {
         // Return success message
         res.status(201).json({ 
             message: emailSent 
-                ? "Usuario registrado correctamente. Por favor, revisa tu correo para verificar tu cuenta." 
-                : "Usuario registrado, pero hubo un problema al enviar el correo de verificación. Contacta a soporte.",
+                ? "Registered user successfully. Please check your email to verify your account." 
+                : "Registered user, but there was a problem sending the verification email. Contact support.",
             userId: newUser._id,
             emailSent
         });
         
     } catch (error) {
-        console.error("Error al registrar usuario:", error);
-        res.status(500).json({ error: error.message || "Error interno del servidor" });
+        console.error("Error registering user:", error);
+        res.status(500).json({ error: error.message || "Internal server error" });
     }
 };
 
+/**
+ * Login user and trigger SMS verification
+ */
 const loginUser = async (req, res) => {
-    try {
-        const { email, password } = req.body;
-
-        // search user by email to validate if exist
-        const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(400).json({ error: "Invalid email or password" });
-        }
-        
-        // Check if user's email is verified
-        if (user.status === 'pending') {
-            return res.status(401).json({ 
-                error: "Email not verified. Please check your inbox for verification link.",
-                isPending: true
-            });
-        }
-
-        // compare passwords
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(400).json({ error: "Invalid email or password" });
-        }
-
-        // Generate SMS verification code for 2FA
-        const verificationCode = generateVerificationCode();
-        storeVerificationCode(user._id.toString(), verificationCode);
-        
-        // Use the stored country dial code directly from the user object
-        const dialCode = user.countryDialCode || await getDialCodeByCountry(user.country);
-        console.log(`Using dial code ${dialCode} for SMS verification`);
-        
-        // Send SMS with verification code
-        await sendSmsVerificationCode(user.phone, verificationCode, dialCode);
-
-        // Return partial success with user ID for 2FA completion
-        res.status(200).json({
-            message: "First authentication step successful. Please enter the verification code sent to your phone.",
-            userId: user._id,
-            requiresVerification: true
-        });
-    } catch (error) {
-        console.error("Error logging in:", error);
-        res.status(500).json({ error: "Internal server error" });
+  try {
+    const { email, password } = req.body;
+    
+    // Validate inputs
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
     }
+    
+    // Find user by email
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Check password
+    const isMatch = await bcrypt.compare(password, user.password);
+    
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Check if account is active
+    if (user.status !== 'active' && user.status !== 'pending_sms') {
+      return res.status(401).json({ 
+        error: 'Account not active. Please verify your email first.' 
+      });
+    }
+    
+    // Format phone number for better display
+    let formattedPhone = user.phone;
+    if (formattedPhone && !formattedPhone.includes('*')) {
+      // Mask middle digits for security
+      const parts = formattedPhone.split('');
+      const visibleDigits = 3;
+      const startVisible = Math.min(2, parts.length - visibleDigits);
+      
+      for (let i = startVisible; i < parts.length - 2; i++) {
+        if (parts[i].match(/\d/)) parts[i] = '*';
+      }
+      
+      formattedPhone = parts.join('');
+    }
+    
+    // Initial login successful, return user ID and phone for SMS verification
+    res.status(200).json({
+      message: 'Login successful, SMS verification required',
+      requireSmsVerification: true,
+      userId: user._id,
+      phone: formattedPhone, // Send formatted phone for UI display
+      user: {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone 
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Server error during login' });
+  }
+};
+
+/**
+ * Verify SMS code for authentication
+ */
+const verifySmsCode = async (req, res) => {
+  try {
+    const { userId, code } = req.body;
+    
+    if (!userId || !code) {
+      return res.status(400).json({ error: 'User ID and verification code are required' });
+    }
+    
+    // Verify the code using the SMS service
+    const isValid = verifyCode(userId, code);
+    
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid or expired verification code' });
+    }
+    
+    // Find user
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        id: user._id, 
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName
+      }, 
+      JWT_SECRET, 
+      { expiresIn: '24h' }
+    );
+    
+    // Return user info and token
+    res.status(200).json({
+      success: true,
+      message: 'Authentication successful',
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        country: user.country
+      }
+    });
+  } catch (error) {
+    console.error('SMS verification error:', error);
+    res.status(500).json({ error: 'Server error during verification' });
+  }
 };
 
 // Verify SMS code and generate JWT token
-const verifySmsCode = async (req, res) => {
+const verifySmsCodeForAuth = async (req, res) => {
     try {
         const { userId, code } = req.body;
         
@@ -264,8 +343,13 @@ const googleAuth = async (req, res) => {
     try {
         const { token } = req.body;
         
+        const client = new OAuth2Client(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET
+        );
+        
         // Verify the Google token
-        const ticket = await googleClient.verifyIdToken({
+        const ticket = await client.verifyIdToken({
             idToken: token,
             audience: process.env.GOOGLE_CLIENT_ID
         });
@@ -435,13 +519,32 @@ const completeGoogleProfile = async (req, res) => {
     }
 };
 
-module.exports = { 
+// Send SMS verification code
+const sendSmsVerification = async (req, res) => {
+    try {
+      const { userId, phoneNumber } = req.body;
+      
+      if (!userId || !phoneNumber) {
+        return res.status(400).json({ error: 'User ID and phone number are required' });
+      }
+      
+      const result = await smsController.sendVerificationSMS(phoneNumber, userId);
+      res.json({ success: true, message: 'Verification code sent successfully' });
+    } catch (error) {
+      console.error('Error sending SMS verification:', error);
+      res.status(500).json({ error: 'Failed to send verification code' });
+    }
+  };
+  
+  module.exports = { 
     registerUser, 
     loginUser, 
     verifyEmail, 
     verifyAdminPin, 
-    verifySmsCode,
+    verifySmsCodeForAuth,
     googleAuth,
-    completeGoogleProfile
+    completeGoogleProfile,
+    sendSmsVerification,
+    verifySmsCode
 };
 
