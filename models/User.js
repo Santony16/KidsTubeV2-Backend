@@ -22,7 +22,6 @@ const userSchema = new Schema({
     match: [/^\d{8,15}$/, "The phone number must be between 8 and 15 digits long."],
   },
   
-  // Add country dial code field
   countryDialCode: {
     type: String,
     default: ''
@@ -78,8 +77,23 @@ const userSchema = new Schema({
     type: String,
     sparse: true,
     index: true
+  },
+  
+  verificationCode: {
+    type: String
+  },
+  verificationCodeExpires: {
+    type: Date
+  },
+  
+  smsVerificationCode: {
+    type: String,
+    default: null
+  },
+  smsVerificationExpires: {
+    type: Date,
+    default: null
   }
 });
-
 
 module.exports = mongoose.model('User', userSchema);
