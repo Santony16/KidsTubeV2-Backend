@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const userController = require('../controllers/userController');
 const { 
     registerUser, 
     loginUser, 
@@ -18,5 +19,6 @@ router.post("/verify-sms", verifySmsCode);
 router.get("/verify-email/:token", verifyEmail);
 router.post("/google-auth", googleAuth);
 router.post("/complete-google-profile", completeGoogleProfile);
+
 
 module.exports = router;
