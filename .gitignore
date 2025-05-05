@@ -149,3 +149,8 @@ dist
 # OS files
 .DS_Store
 Thumbs.db
+
+# Dependencies
+node_modules/
+package-lock.json
+package.json
