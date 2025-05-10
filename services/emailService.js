@@ -39,7 +39,7 @@ const sendVerificationEmail = async (to, token, firstName) => {
     const sender = new Sender(fromEmail, fromName);
     const recipients = [new Recipient(to, firstName)];
 
-    // Email content in English
+    // Email content
     const htmlContent = `
       <div style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">
         <div style="background-color: #4d56f8; padding: 20px; color: white; text-align: center;">
@@ -66,7 +66,7 @@ const sendVerificationEmail = async (to, token, firstName) => {
       </div>
     `;
 
-    // Plain text content in English
+    // Plain text content
     const textContent = `
       Hello ${firstName},
       

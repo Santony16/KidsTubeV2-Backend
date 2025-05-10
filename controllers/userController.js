@@ -71,7 +71,6 @@ const registerUser = async (req, res) => {
         // save in db
         await newUser.save();
         
-        // Intentar enviar el correo de verificación
         const emailSent = await sendVerificationEmail(
             email, 
             verificationToken, 
